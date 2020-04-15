@@ -53,15 +53,20 @@
 
 #include <asm/ptrace.h>
 #include <asm/irq_regs.h>
+#ifdef ODM_WT_EDIT
+// Hui.Wang@ODM_WT.BSP.Kernel.Stability.1941873, 2019/05/31, Add for display boot reason
+#include <wt_sys/wt_boot_reason.h>
+#endif
 
 /* Whether we react on sysrq keys or just ignore them */
 static int __read_mostly sysrq_enabled = CONFIG_MAGIC_SYSRQ_DEFAULT_ENABLE;
 static bool __read_mostly sysrq_always_enabled;
 
-static bool sysrq_on(void)
+bool sysrq_on(void)
 {
 	return sysrq_enabled || sysrq_always_enabled;
 }
+EXPORT_SYMBOL(sysrq_on);
 
 /*
  * A value of 1 means 'all', other nonzero values are an op mask:
@@ -143,6 +148,12 @@ static void sysrq_handle_crash(int key)
 	 */
 	rcu_read_unlock();
 	panic_on_oops = 1;	/* force panic */
+#ifdef ODM_WT_EDIT
+// Hui.Wang@ODM_WT.BSP.Kernel.Stability.1941873, 2019/05/31, Add for display boot reason
+#ifdef CONFIG_WT_BOOT_REASON
+	save_panic_key_log("Sysrq: Trigger a crash\n");
+#endif
+#endif
 	wmb();
 	*killer = 1;
 }

@@ -59,6 +59,8 @@ source "drivers/spi/Kconfig"
 
 source "drivers/spmi/Kconfig"
 
+source "drivers/slimbus/Kconfig"
+
 source "drivers/hsi/Kconfig"
 
 source "drivers/pps/Kconfig"
@@ -135,6 +137,8 @@ source "drivers/hv/Kconfig"
 
 source "drivers/xen/Kconfig"
 
+source "drivers/vservices/Kconfig"
+
 source "drivers/staging/Kconfig"
 
 source "drivers/platform/Kconfig"
@@ -168,6 +172,8 @@ source "drivers/ntb/Kconfig"
 source "drivers/vme/Kconfig"
 
 source "drivers/pwm/Kconfig"
+
+source "drivers/gpu/msm/Kconfig"
 
 source "drivers/irqchip/Kconfig"
 
@@ -208,5 +214,14 @@ source "drivers/fsi/Kconfig"
 source "drivers/tee/Kconfig"
 
 source "drivers/mux/Kconfig"
+
+source "drivers/sensors/Kconfig"
+
+#ifdef ODM_WT_EDIT
+# Hui.Wang@ODM_WT.BSP.Kernel.Stability.1941873, 2019/04/20, Add for save bootloader log
+source "drivers/wt_sys/Kconfig"
+#endif
+
+source "drivers/esoc/Kconfig"
 
 endmenu

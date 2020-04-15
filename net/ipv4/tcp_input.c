@@ -95,6 +95,7 @@ int sysctl_tcp_min_rtt_wlen __read_mostly = 300;
 int sysctl_tcp_moderate_rcvbuf __read_mostly = 1;
 int sysctl_tcp_early_retrans __read_mostly = 3;
 int sysctl_tcp_invalid_ratelimit __read_mostly = HZ/2;
+int sysctl_tcp_default_init_rwnd __read_mostly = TCP_INIT_CWND * 2;
 
 #define FLAG_DATA		0x01 /* Incoming frame contained data.		*/
 #define FLAG_WIN_UPDATE		0x02 /* Incoming ACK was a window update.	*/
@@ -5112,7 +5113,8 @@ static void __tcp_ack_snd_check(struct sock *sk, int ofo_possible)
 	struct tcp_sock *tp = tcp_sk(sk);
 
 	    /* More than one full frame received... */
-	if (((tp->rcv_nxt - tp->rcv_wup) > inet_csk(sk)->icsk_ack.rcv_mss &&
+	if (((tp->rcv_nxt - tp->rcv_wup) > (inet_csk(sk)->icsk_ack.rcv_mss) *
+					sysctl_tcp_delack_seg &&
 	     /* ... and right edge of window advances far enough.
 	      * (tcp_recvmsg() will send ACK otherwise). Or...
 	      */
@@ -5663,7 +5665,18 @@ static int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
 	struct tcp_fastopen_cookie foc = { .len = -1 };
 	int saved_clamp = tp->rx_opt.mss_clamp;
 	bool fastopen_fail;
+	#ifdef VENDOR_EDIT
+	//Mengqing.Zhao@PSW.CN.WiFi.Network.internet.1394484, 2019/04/02,
+	//add for: When find TCP SYN-ACK Timestamp value error, just do not use Timestamp
+	static int ts_error_count = 0;
+	int ts_error_threshold = sysctl_tcp_ts_control[0];
 
+	//when network change (frameworks set sysctl_tcp_ts_control[1] = 1), clear ts_error_count
+	if (sysctl_tcp_ts_control[1] == 1) {
+		ts_error_count = 0;
+		sysctl_tcp_ts_control[1] = 0;
+	}
+	#endif /* VENDOR_EDIT */
 	tcp_parse_options(sock_net(sk), skb, &tp->rx_opt, 0, &foc);
 	if (tp->rx_opt.saw_tstamp && tp->rx_opt.rcv_tsecr)
 		tp->rx_opt.rcv_tsecr -= tp->tsoffset;
@@ -5686,9 +5699,29 @@ static int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
 			     tcp_time_stamp(tp))) {
 			NET_INC_STATS(sock_net(sk),
 					LINUX_MIB_PAWSACTIVEREJECTED);
+			#ifdef VENDOR_EDIT
+			//Mengqing.Zhao@PSW.CN.WiFi.Network.internet.1394484, 2019/04/02,
+			//add for: When find TCP SYN-ACK Timestamp value error, just do not use Timestamp
+			//if count > threshold, disable TCP Timestamps
+			if (ts_error_threshold > 0) {
+				ts_error_count++;
+				if (ts_error_count >= ts_error_threshold) {
+					sock_net(sk)->ipv4.sysctl_tcp_timestamps = 0;
+					ts_error_count = 0;
+				}
+			}
+			#endif /* VENDOR_EDIT */
 			goto reset_and_undo;
 		}
-
+		#ifdef VENDOR_EDIT
+		//Mengqing.Zhao@PSW.CN.WiFi.Network.internet.1394484, 2019/04/02,
+		//add for: When find TCP SYN-ACK Timestamp value error, just do not use Timestamp
+		//if other connection's Timestamp is correct, the network environment may be OK
+		if (tp->rx_opt.saw_tstamp && tp->rx_opt.rcv_tsecr &&
+			ts_error_threshold > 0 && ts_error_count > 0) {
+			ts_error_count--;
+		}
+		#endif /* VENDOR_EDIT */
 		/* Now ACK is acceptable.
 		 *
 		 * "If the RST bit is set

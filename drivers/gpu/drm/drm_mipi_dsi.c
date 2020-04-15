@@ -360,6 +360,7 @@ static ssize_t mipi_dsi_device_transfer(struct mipi_dsi_device *dsi,
 
 	if (dsi->mode_flags & MIPI_DSI_MODE_LPM)
 		msg->flags |= MIPI_DSI_MSG_USE_LPM;
+	msg->flags |= MIPI_DSI_MSG_LASTCOMMAND;
 
 	return ops->transfer(dsi->host, msg);
 }
@@ -393,6 +394,7 @@ bool mipi_dsi_packet_format_is_short(u8 type)
 	case MIPI_DSI_DCS_SHORT_WRITE_PARAM:
 	case MIPI_DSI_DCS_READ:
 	case MIPI_DSI_SET_MAXIMUM_RETURN_PACKET_SIZE:
+	case MIPI_DSI_COMPRESSION_MODE:
 		return true;
 	}
 
@@ -424,6 +426,7 @@ bool mipi_dsi_packet_format_is_long(u8 type)
 	case MIPI_DSI_PACKED_PIXEL_STREAM_18:
 	case MIPI_DSI_PIXEL_STREAM_3BYTE_18:
 	case MIPI_DSI_PACKED_PIXEL_STREAM_24:
+	case MIPI_DSI_PPS:
 		return true;
 	}
 
@@ -454,7 +457,7 @@ int mipi_dsi_create_packet(struct mipi_dsi_packet *packet,
 		return -EINVAL;
 
 	memset(packet, 0, sizeof(*packet));
-	packet->header[0] = ((msg->channel & 0x3) << 6) | (msg->type & 0x3f);
+	packet->header[2] = ((msg->channel & 0x3) << 6) | (msg->type & 0x3f);
 
 	/* TODO: compute ECC if hardware support is not available */
 
@@ -466,16 +469,16 @@ int mipi_dsi_create_packet(struct mipi_dsi_packet *packet,
 	 * and 2.
 	 */
 	if (mipi_dsi_packet_format_is_long(msg->type)) {
-		packet->header[1] = (msg->tx_len >> 0) & 0xff;
-		packet->header[2] = (msg->tx_len >> 8) & 0xff;
+		packet->header[0] = (msg->tx_len >> 0) & 0xff;
+		packet->header[1] = (msg->tx_len >> 8) & 0xff;
 
 		packet->payload_length = msg->tx_len;
 		packet->payload = msg->tx_buf;
 	} else {
 		const u8 *tx = msg->tx_buf;
 
-		packet->header[1] = (msg->tx_len > 0) ? tx[0] : 0;
-		packet->header[2] = (msg->tx_len > 1) ? tx[1] : 0;
+		packet->header[0] = (msg->tx_len > 0) ? tx[0] : 0;
+		packet->header[1] = (msg->tx_len > 1) ? tx[1] : 0;
 	}
 
 	packet->size = sizeof(packet->header) + packet->payload_length;
@@ -1052,9 +1055,14 @@ EXPORT_SYMBOL(mipi_dsi_dcs_set_tear_scanline);
 int mipi_dsi_dcs_set_display_brightness(struct mipi_dsi_device *dsi,
 					u16 brightness)
 {
+	#ifndef VENDOR_EDIT
+	//liwei.a@oppo.com, 2019.04.18, first params should be the higher bit of 0x51h
 	u8 payload[2] = { brightness & 0xff, brightness >> 8 };
-	ssize_t err;
+	#else
+	u8 payload[2] = { brightness >> 8, brightness & 0xff };
+	#endif
 
+	ssize_t err;
 	err = mipi_dsi_dcs_write(dsi, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
 				 payload, sizeof(payload));
 	if (err < 0)
@@ -1063,6 +1071,26 @@ int mipi_dsi_dcs_set_display_brightness(struct mipi_dsi_device *dsi,
 	return 0;
 }
 EXPORT_SYMBOL(mipi_dsi_dcs_set_display_brightness);
+
+#ifdef ODM_WT_EDIT
+//Hongzhu.Su@ODM_WT.MM.Display.Lcd.1941873, Start 2019/04/17, add CABC cmd used for power saving
+int mipi_dsi_dcs_set_display_cabc(struct mipi_dsi_device *dsi,
+									u32 cabc_mode)
+{
+	u8 payload[1];
+	ssize_t err;
+	payload[0] = (u8)cabc_mode;
+	pr_info("func:%s cabc mode:%d\n",__func__,payload[0]);
+	err = mipi_dsi_dcs_write(dsi, MIPI_DCS_WRITE_POWER_SAVE,
+				 payload, sizeof(payload));
+	if (err < 0)
+		return err;
+
+	return 0;
+}
+EXPORT_SYMBOL(mipi_dsi_dcs_set_display_cabc);
+//Hongzhu.Su@ODM_WT.MM.Display.Lcd.1941873, End 2019/04/17, add CABC cmd used for power saving
+#endif /* ODM_WT_EDIT */
 
 /**
  * mipi_dsi_dcs_get_display_brightness() - gets the current brightness value

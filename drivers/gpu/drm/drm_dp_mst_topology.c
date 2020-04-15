@@ -294,6 +294,12 @@ static void drm_dp_encode_sideband_req(struct drm_dp_sideband_msg_req_body *req,
 		memcpy(&buf[idx], req->u.i2c_write.bytes, req->u.i2c_write.num_bytes);
 		idx += req->u.i2c_write.num_bytes;
 		break;
+
+	case DP_POWER_DOWN_PHY:
+	case DP_POWER_UP_PHY:
+		buf[idx] = (req->u.port_num.port_number & 0xf) << 4;
+		idx++;
+		break;
 	}
 	raw->cur_len = idx;
 }
@@ -433,6 +439,7 @@ static bool drm_dp_sideband_parse_remote_dpcd_read(struct drm_dp_sideband_msg_rx
 	if (idx > raw->curlen)
 		goto fail_len;
 	repmsg->u.remote_dpcd_read_ack.num_bytes = raw->msg[idx];
+	idx++;
 	if (idx > raw->curlen)
 		goto fail_len;
 
@@ -538,6 +545,21 @@ fail_len:
 	return false;
 }
 
+static bool drm_dp_sideband_parse_power_updown_phy_ack(struct drm_dp_sideband_msg_rx *raw,
+						       struct drm_dp_sideband_msg_reply_body *repmsg)
+{
+	int idx = 1;
+
+	repmsg->u.port_number.port_number = (raw->msg[idx] >> 4) & 0xf;
+	idx++;
+	if (idx > raw->curlen) {
+		DRM_DEBUG_KMS("power up/down phy parse length fail %d %d\n",
+			      idx, raw->curlen);
+		return false;
+	}
+	return true;
+}
+
 static bool drm_dp_sideband_parse_reply(struct drm_dp_sideband_msg_rx *raw,
 					struct drm_dp_sideband_msg_reply_body *msg)
 {
@@ -567,6 +589,9 @@ static bool drm_dp_sideband_parse_reply(struct drm_dp_sideband_msg_rx *raw,
 		return drm_dp_sideband_parse_enum_path_resources_ack(raw, msg);
 	case DP_ALLOCATE_PAYLOAD:
 		return drm_dp_sideband_parse_allocate_payload_ack(raw, msg);
+	case DP_POWER_DOWN_PHY:
+	case DP_POWER_UP_PHY:
+		return drm_dp_sideband_parse_power_updown_phy_ack(raw, msg);
 	default:
 		DRM_ERROR("Got unknown reply 0x%02x\n", msg->req_type);
 		return false;
@@ -688,6 +713,22 @@ static int build_allocate_payload(struct drm_dp_sideband_msg_tx *msg, int port_n
 	req.u.allocate_payload.number_sdp_streams = number_sdp_streams;
 	memcpy(req.u.allocate_payload.sdp_stream_sink, sdp_stream_sink,
 		   number_sdp_streams);
+	drm_dp_encode_sideband_req(&req, msg);
+	msg->path_msg = true;
+	return 0;
+}
+
+static int build_power_updown_phy(struct drm_dp_sideband_msg_tx *msg,
+				  int port_num, bool power_up)
+{
+	struct drm_dp_sideband_msg_req_body req;
+
+	if (power_up)
+		req.req_type = DP_POWER_UP_PHY;
+	else
+		req.req_type = DP_POWER_DOWN_PHY;
+
+	req.u.port_num.port_number = port_num;
 	drm_dp_encode_sideband_req(&req, msg);
 	msg->path_msg = true;
 	return 0;
@@ -1042,10 +1083,12 @@ static bool drm_dp_port_setup_pdt(struct drm_dp_mst_port *port)
 		lct = drm_dp_calculate_rad(port, rad);
 
 		port->mstb = drm_dp_add_mst_branch_device(lct, rad);
-		port->mstb->mgr = port->mgr;
-		port->mstb->port_parent = port;
+		if (port->mstb) {
+			port->mstb->mgr = port->mgr;
+			port->mstb->port_parent = port;
 
-		send_link = true;
+			send_link = true;
+		}
 		break;
 	}
 	return send_link;
@@ -1727,6 +1770,40 @@ fail_put:
 	return ret;
 }
 
+int drm_dp_send_power_updown_phy(struct drm_dp_mst_topology_mgr *mgr,
+				 struct drm_dp_mst_port *port, bool power_up)
+{
+	struct drm_dp_sideband_msg_tx *txmsg;
+	int len, ret;
+
+	port = drm_dp_get_validated_port_ref(mgr, port);
+	if (!port)
+		return -EINVAL;
+
+	txmsg = kzalloc(sizeof(*txmsg), GFP_KERNEL);
+	if (!txmsg) {
+		drm_dp_put_port(port);
+		return -ENOMEM;
+	}
+
+	txmsg->dst = port->parent;
+	len = build_power_updown_phy(txmsg, port->port_num, power_up);
+	drm_dp_queue_down_tx(mgr, txmsg);
+
+	ret = drm_dp_mst_wait_tx_reply(port->parent, txmsg);
+	if (ret > 0) {
+		if (txmsg->reply.reply_type == 1)
+			ret = -EINVAL;
+		else
+			ret = 0;
+	}
+	kfree(txmsg);
+	drm_dp_put_port(port);
+
+	return ret;
+}
+EXPORT_SYMBOL(drm_dp_send_power_updown_phy);
+
 static int drm_dp_create_payload_step1(struct drm_dp_mst_topology_mgr *mgr,
 				       int id,
 				       struct drm_dp_payload *payload)
@@ -1908,21 +1985,57 @@ EXPORT_SYMBOL(drm_dp_update_payload_part2);
 #if 0 /* unused as of yet */
 static int drm_dp_send_dpcd_read(struct drm_dp_mst_topology_mgr *mgr,
 				 struct drm_dp_mst_port *port,
-				 int offset, int size)
+				 int offset, int size, u8 *bytes)
 {
 	int len;
+	int ret;
 	struct drm_dp_sideband_msg_tx *txmsg;
+	struct drm_dp_mst_branch *mstb;
+
+	memset(bytes, 0, size);
+
+	mstb = drm_dp_get_validated_mstb_ref(mgr, port->parent);
+	if (!mstb)
+		return -EINVAL;
 
 	txmsg = kzalloc(sizeof(*txmsg), GFP_KERNEL);
-	if (!txmsg)
-		return -ENOMEM;
+	if (!txmsg) {
+		ret = -ENOMEM;
+		goto fail_put;
+	}
 
-	len = build_dpcd_read(txmsg, port->port_num, 0, 8);
-	txmsg->dst = port->parent;
+	len = build_dpcd_read(txmsg, port->port_num, offset, size);
+	txmsg->dst = mstb;
 
 	drm_dp_queue_down_tx(mgr, txmsg);
+	ret = drm_dp_mst_wait_tx_reply(mstb, txmsg);
+	if (ret <= 0) {
+		DRM_ERROR("dpcd read failed\n");
+		goto fail_free_msg;
+	}
 
-	return 0;
+	if (txmsg->reply.reply_type == 1) {
+		DRM_ERROR("dpcd read nack received\n");
+		ret = -EINVAL;
+		goto fail_free_msg;
+	}
+
+	if (port->port_num != txmsg->reply.u.remote_dpcd_read_ack.port_number) {
+		DRM_ERROR("got incorrect port in response\n");
+		ret = -EINVAL;
+		goto fail_free_msg;
+	}
+
+	if (size > txmsg->reply.u.remote_dpcd_read_ack.num_bytes)
+		size = txmsg->reply.u.remote_dpcd_read_ack.num_bytes;
+
+	memcpy(bytes, txmsg->reply.u.remote_dpcd_read_ack.bytes, size);
+
+fail_free_msg:
+	kfree(txmsg);
+fail_put:
+	drm_dp_put_mst_branch_device(mstb);
+	return ret;
 }
 #endif
 
@@ -2015,6 +2128,9 @@ static bool drm_dp_get_vc_payload_bw(int dp_link_bw,
 		break;
 	case DP_LINK_BW_5_4:
 		*out = 10 * dp_link_count;
+		break;
+	case DP_LINK_BW_8_1:
+		*out = 15 * dp_link_count;
 		break;
 	}
 	return true;
