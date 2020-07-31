@@ -28,6 +28,7 @@
 #include <linux/interrupt.h>
 #include <linux/debug_locks.h>
 #include <linux/osq_lock.h>
+#include <linux/delay.h>
 
 #ifdef CONFIG_DEBUG_MUTEXES
 # include "mutex-debug.h"
@@ -554,6 +555,17 @@ mutex_optimistic_spin(struct mutex *lock, struct ww_acquire_ctx *ww_ctx,
 		 * values at the cost of a few extra spins.
 		 */
 		cpu_relax();
+
+		/*
+		 * On arm systems, we must slow down the waiter's repeated
+		 * aquisition of spin_mlock and atomics on the lock count, or
+		 * we risk starving out a thread attempting to release the
+		 * mutex. The mutex slowpath release must take spin lock
+		 * wait_lock. This spin lock can share a monitor with the
+		 * other waiter atomics in the mutex data structure, so must
+		 * take care to rate limit the waiters.
+		 */
+		udelay(1);
 	}
 
 	if (!waiter)
@@ -785,6 +797,7 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 		/* add waiting tasks to the end of the waitqueue (FIFO): */
 		list_add_tail(&waiter.list, &lock->wait_list);
 
+
 #ifdef CONFIG_DEBUG_MUTEXES
 		waiter.ww_ctx = MUTEX_POISON_WW_CTX;
 #endif
@@ -818,7 +831,10 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 		 * wait_lock. This ensures the lock cancellation is ordered
 		 * against mutex_unlock() and wake-ups do not go missing.
 		 */
-		if (unlikely(signal_pending_state(state, current))) {
+		//#ifdef VENDOR_EDIT fangpan@Swdp.shanghai,2015/11/12
+		if (unlikely(signal_pending_state(state, current))
+			|| hung_long_and_fatal_signal_pending(current)) {
+		//#endif
 			ret = -EINTR;
 			goto err;
 		}
@@ -830,8 +846,19 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 		}
 
 		spin_unlock(&lock->wait_lock);
+#if defined(VENDOR_EDIT) && defined(CONFIG_OPPO_HEALTHINFO)
+// Liujie.Xie@TECH.Kernel.Sched, 2019/08/29, add for stuck monitor
+        if (state & TASK_UNINTERRUPTIBLE) {
+            current->in_mutex = 1;
+        }
+#endif
 		schedule_preempt_disabled();
-
+#if defined(VENDOR_EDIT) && defined(CONFIG_OPPO_HEALTHINFO)
+// Liujie.Xie@TECH.Kernel.Sched, 2019/08/29, add for stuck monitor
+        if (state & TASK_UNINTERRUPTIBLE) {
+            current->in_mutex = 0;
+        }
+#endif
 		/*
 		 * ww_mutex needs to always recheck its position since its waiter
 		 * list is not FIFO ordered.
@@ -1050,6 +1077,7 @@ static noinline void __sched __mutex_unlock_slowpath(struct mutex *lock, unsigne
 
 	spin_lock(&lock->wait_lock);
 	debug_mutex_unlock(lock);
+
 	if (!list_empty(&lock->wait_list)) {
 		/* get the first entry from the wait-list: */
 		struct mutex_waiter *waiter =

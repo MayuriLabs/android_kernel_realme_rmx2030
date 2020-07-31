@@ -50,12 +50,24 @@ obj-$(CONFIG_SRAM)		+= sram.o
 obj-$(CONFIG_SRAM_EXEC)		+= sram-exec.o
 obj-y				+= mic/
 obj-$(CONFIG_GENWQE)		+= genwqe/
+obj-$(CONFIG_HDCP_QSEECOM)	+= hdcp_qseecom.o
+obj-$(CONFIG_HDCP_QSEECOM)	+= msm_hdcp.o
+obj-$(CONFIG_QSEECOM)		+= qseecom.o
 obj-$(CONFIG_ECHO)		+= echo/
 obj-$(CONFIG_VEXPRESS_SYSCFG)	+= vexpress-syscfg.o
 obj-$(CONFIG_CXL_BASE)		+= cxl/
-obj-$(CONFIG_ASPEED_LPC_CTRL)	+= aspeed-lpc-ctrl.o
-obj-$(CONFIG_ASPEED_LPC_SNOOP)	+= aspeed-lpc-snoop.o
-obj-$(CONFIG_PCI_ENDPOINT_TEST)	+= pci_endpoint_test.o
+obj-$(CONFIG_ASPEED_LPC_CTRL)  += aspeed-lpc-ctrl.o
+obj-$(CONFIG_ASPEED_LPC_SNOOP) += aspeed-lpc-snoop.o
+obj-$(CONFIG_PCI_ENDPOINT_TEST)        += pci_endpoint_test.o
+obj-$(CONFIG_FPR_FPC) 	+= fpr_FingerprintCard/
+
+obj-$(CONFIG_UID_SYS_STATS)	+= uid_sys_stats.o
+obj-$(CONFIG_MEMORY_STATE_TIME)	+= memory_state_time.o
+obj-$(CONFIG_QPNP_MISC) 	+= qpnp-misc.o
+
+obj-$(CONFIG_OKL4_USER_VIRQ)	+= okl4-virq.o
+obj-$(CONFIG_OKL4_RINGBUF)	+= okl4-ringbuf.o
+obj-$(CONFIG_TEST_IRQ_REQUESTER) += irq_requester.o
 
 lkdtm-$(CONFIG_LKDTM)		+= lkdtm_core.o
 lkdtm-$(CONFIG_LKDTM)		+= lkdtm_bugs.o
@@ -66,6 +78,7 @@ lkdtm-$(CONFIG_LKDTM)		+= lkdtm_rodata_objcopy.o
 lkdtm-$(CONFIG_LKDTM)		+= lkdtm_usercopy.o
 
 KCOV_INSTRUMENT_lkdtm_rodata.o	:= n
+CFLAGS_lkdtm_rodata.o		+= $(DISABLE_LTO)
 
 OBJCOPYFLAGS :=
 OBJCOPYFLAGS_lkdtm_rodata_objcopy.o := \
@@ -74,3 +87,19 @@ OBJCOPYFLAGS_lkdtm_rodata_objcopy.o := \
 targets += lkdtm_rodata.o lkdtm_rodata_objcopy.o
 $(obj)/lkdtm_rodata_objcopy.o: $(obj)/lkdtm_rodata.o FORCE
 	$(call if_changed,objcopy)
+
+obj-$(CONFIG_OKL4_USER_VIPC)    += okl4-vipc.o
+obj-$(CONFIG_OKL4_GUEST)        += okl4-panic.o
+obj-$(CONFIG_OKL4_LINK_SHBUF)    += okl4-link-shbuf.o
+#ifdef VENDOR_EDIT
+#Fuchun.Liao@BSP.CHG.Basic, 2018/11/06, Add for oppo rf cable monitor
+obj-$(CONFIG_OPPO_RF_CABLE_MONITOR)				+= oppo_rf_cable_monitor.o
+#endif
+# Mengmeng.Wang@SRC.System, 2018/08/28, Add for oiface
+obj-y				+= schedx.o
+#endif
+
+#ifdef VENDOR_EDIT
+#Hexiaosen@PSW.BSP. 2019/11/25, Add for oppo rf cable monitor
+obj-y                           += oppo_rf_cable_monitor.o
+#endif

@@ -90,20 +90,12 @@ void __init_rwsem(struct rw_semaphore *sem, const char *name,
 	sem->owner = NULL;
 	osq_lock_init(&sem->osq);
 #endif
+#ifdef CONFIG_RWSEM_PRIO_AWARE
+	sem->m_count = 0;
+#endif
 }
 
 EXPORT_SYMBOL(__init_rwsem);
-
-enum rwsem_waiter_type {
-	RWSEM_WAITING_FOR_WRITE,
-	RWSEM_WAITING_FOR_READ
-};
-
-struct rwsem_waiter {
-	struct list_head list;
-	struct task_struct *task;
-	enum rwsem_waiter_type type;
-};
 
 enum rwsem_wake_type {
 	RWSEM_WAKE_ANY,		/* Wake whatever's at head of wait list */
@@ -235,6 +227,7 @@ __rwsem_down_read_failed_common(struct rw_semaphore *sem, int state)
 	long count, adjustment = -RWSEM_ACTIVE_READ_BIAS;
 	struct rwsem_waiter waiter;
 	DEFINE_WAKE_Q(wake_q);
+	bool is_first_waiter = false;
 
 	waiter.task = current;
 	waiter.type = RWSEM_WAITING_FOR_READ;
@@ -242,7 +235,9 @@ __rwsem_down_read_failed_common(struct rw_semaphore *sem, int state)
 	raw_spin_lock_irq(&sem->wait_lock);
 	if (list_empty(&sem->wait_list))
 		adjustment += RWSEM_WAITING_BIAS;
-	list_add_tail(&waiter.list, &sem->wait_list);
+
+	/* is_first_waiter == true means we are first in the queue */
+	is_first_waiter = rwsem_list_add_per_prio(&waiter, sem);
 
 	/* we're now waiting on the lock, but no longer actively locking */
 	count = atomic_long_add_return(adjustment, &sem->count);
@@ -255,8 +250,10 @@ __rwsem_down_read_failed_common(struct rw_semaphore *sem, int state)
 	 */
 	if (count == RWSEM_WAITING_BIAS ||
 	    (count > RWSEM_WAITING_BIAS &&
-	     adjustment != -RWSEM_ACTIVE_READ_BIAS))
+	     (adjustment != -RWSEM_ACTIVE_READ_BIAS ||
+	     is_first_waiter)))
 		__rwsem_mark_wake(sem, RWSEM_WAKE_ANY, &wake_q);
+	
 
 	raw_spin_unlock_irq(&sem->wait_lock);
 	wake_up_q(&wake_q);
@@ -273,7 +270,21 @@ __rwsem_down_read_failed_common(struct rw_semaphore *sem, int state)
 			raw_spin_unlock_irq(&sem->wait_lock);
 			break;
 		}
+		//#ifdef VENDOR_EDIT fangpan@Swdp.shanghai,2015/11/12
+		if (hung_long_and_fatal_signal_pending(current)) {
+			list_del(&waiter.list);
+			break;
+		}
+		//#endif
+#if defined(VENDOR_EDIT) && defined(CONFIG_OPPO_HEALTHINFO)
+// Liujie.Xie@TECH.Kernel.Sched, 2019/08/29, add for stuck monitor
+        current->in_downread = 1;
+#endif
 		schedule();
+#if defined(VENDOR_EDIT) && defined(CONFIG_OPPO_HEALTHINFO)
+// Liujie.Xie@TECH.Kernel.Sched, 2019/08/29, add for stuck monitor
+        current->in_downread = 0;
+#endif
 	}
 
 	__set_current_state(TASK_RUNNING);
@@ -505,6 +516,7 @@ __rwsem_down_write_failed_common(struct rw_semaphore *sem, int state)
 	struct rwsem_waiter waiter;
 	struct rw_semaphore *ret = sem;
 	DEFINE_WAKE_Q(wake_q);
+	bool is_first_waiter = false;
 
 	/* undo write bias from down_write operation, stop active locking */
 	count = atomic_long_sub_return(RWSEM_ACTIVE_WRITE_BIAS, &sem->count);
@@ -526,7 +538,11 @@ __rwsem_down_write_failed_common(struct rw_semaphore *sem, int state)
 	if (list_empty(&sem->wait_list))
 		waiting = false;
 
-	list_add_tail(&waiter.list, &sem->wait_list);
+	/*
+	 * is_first_waiter == true means we are first in the queue,
+	 * so there is no read locks that were queued ahead of us.
+	 */
+	is_first_waiter = rwsem_list_add_per_prio(&waiter, sem);
 
 	/* we're now waiting on the lock, but no longer actively locking */
 	if (waiting) {
@@ -537,7 +553,7 @@ __rwsem_down_write_failed_common(struct rw_semaphore *sem, int state)
 		 * no active writers, the lock must be read owned; so we try to
 		 * wake any read locks that were queued ahead of us.
 		 */
-		if (count > RWSEM_WAITING_BIAS) {
+		if (!is_first_waiter && count > RWSEM_WAITING_BIAS) {
 			__rwsem_mark_wake(sem, RWSEM_WAKE_READERS, &wake_q);
 			/*
 			 * The wakeup is normally called _after_ the wait_lock
@@ -568,8 +584,15 @@ __rwsem_down_write_failed_common(struct rw_semaphore *sem, int state)
 		do {
 			if (signal_pending_state(state, current))
 				goto out_nolock;
-
+#if defined(VENDOR_EDIT) && defined(CONFIG_OPPO_HEALTHINFO)
+// Liujie.Xie@TECH.Kernel.Sched, 2019/08/29, add for stuck monitor
+            current->in_downwrite = 1;
+#endif
 			schedule();
+#if defined(VENDOR_EDIT) && defined(CONFIG_OPPO_HEALTHINFO)
+// Liujie.Xie@TECH.Kernel.Sched, 2019/08/29, add for stuck monitor
+            current->in_downwrite = 0;
+#endif
 			set_current_state(state);
 		} while ((count = atomic_long_read(&sem->count)) & RWSEM_ACTIVE_MASK);
 

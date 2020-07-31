@@ -61,13 +61,19 @@ jiffies = jiffies_64;
 #define TRAMP_TEXT					\
 	. = ALIGN(PAGE_SIZE);				\
 	VMLINUX_SYMBOL(__entry_tramp_text_start) = .;	\
-	*(.entry.tramp.text)				\
+	KEEP(*(.entry.tramp.text))			\
 	. = ALIGN(PAGE_SIZE);				\
 	VMLINUX_SYMBOL(__entry_tramp_text_end) = .;
 #else
 #define TRAMP_TEXT
 #endif
 
+#define RTIC_BSS					\
+	. = ALIGN(PAGE_SIZE);				\
+	VMLINUX_SYMBOL(__bss_rtic_start) = .;	\
+	KEEP(*(.bss.rtic))			\
+	. = ALIGN(PAGE_SIZE);				\
+	VMLINUX_SYMBOL(__bss_rtic_end) = .;
 /*
  * The size of the PE/COFF section that covers the kernel image, which
  * runs from stext to _edata, must be a round multiple of the PE/COFF
@@ -151,11 +157,11 @@ SECTIONS
 	. = ALIGN(4);
 	.altinstructions : {
 		__alt_instructions = .;
-		*(.altinstructions)
+		KEEP(*(.altinstructions))
 		__alt_instructions_end = .;
 	}
 	.altinstr_replacement : {
-		*(.altinstr_replacement)
+		KEEP(*(.altinstr_replacement))
 	}
 
 	. = ALIGN(PAGE_SIZE);
@@ -238,6 +244,10 @@ SECTIONS
 	STABS_DEBUG
 
 	HEAD_SYMBOLS
+
+	.bss : {			/* bss segment		*/
+         RTIC_BSS
+	}
 }
 
 /*
